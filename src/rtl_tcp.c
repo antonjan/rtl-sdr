@@ -84,6 +84,11 @@ static int llbuf_num = 500;
 
 static volatile int do_exit = 0;
 
+char user_password[200]; //@Andris
+int password_required = 0;
+int password_failed = 0;
+int password_flag = 0;
+
 void usage(void)
 {
 	printf("rtl_tcp, an I/Q spectrum server for RTL2832 based DVB-T receivers\n\n"
@@ -95,7 +100,8 @@ void usage(void)
 		"\t[-b number of buffers (default: 15, set by library)]\n"
 		"\t[-n max number of linked list buffers to keep (default: 500)]\n"
 		"\t[-d device index (default: 0)]\n"
-		"\t[-P ppm_error (default: 0)]\n");
+		"\t[-P ppm_error (default: 0)]\n"
+		"\t[-l password (default: no access control)]\n");
 	exit(1);
 }
 
@@ -139,7 +145,7 @@ static void sighandler(int signum)
 
 void rtlsdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
-	if(!do_exit) {
+	if(!(do_exit||password_failed)) {
 		struct llist *rpt = (struct llist*)malloc(sizeof(struct llist));
 		rpt->data = (char*)malloc(len);
 		memcpy(rpt->data, buf, len);
@@ -193,7 +199,7 @@ static void *tcp_worker(void *arg)
 	int r = 0;
 
 	while(1) {
-		if(do_exit)
+		if(do_exit||password_failed)
 			pthread_exit(0);
 
 		pthread_mutex_lock(&ll_mutex);
@@ -223,9 +229,17 @@ static void *tcp_worker(void *arg)
 				tv.tv_usec = 0;
 				r = select(s+1, NULL, &writefds, NULL, &tv);
 				if(r) {
-					bytessent = send(s,  &curelem->data[index], bytesleft, 0);
-					bytesleft -= bytessent;
-					index += bytessent;
+					if(password_required)
+					{
+						index += bytesleft;					
+						bytesleft=0;
+					}
+					else
+					{
+						bytessent = send(s,  &curelem->data[index], bytesleft, 0);
+						bytesleft -= bytessent;
+						index += bytessent;
+					}
 				}
 				if(bytessent == SOCKET_ERROR || do_exit) {
 						printf("worker socket bye\n");
@@ -270,6 +284,8 @@ struct command{
 #ifdef _WIN32
 #pragma pack(pop)
 #endif
+
+
 static void *command_worker(void *arg)
 {
 	int left, received = 0;
@@ -278,7 +294,17 @@ static void *command_worker(void *arg)
 	struct timeval tv= {1, 0};
 	int r = 0;
 	uint32_t tmp;
-
+	char recved_user_password[200];
+	int pwlen=strlen(user_password);
+	if(password_required && recv(s, recved_user_password, pwlen, 0))
+	{
+		fprintf(stderr, "Waiting for password...\n");
+		recved_user_password[pwlen]='\0';
+		password_required=password_failed=!!strcmp(recved_user_password,user_password);
+		fprintf(stderr, "Password %s\n",(password_failed)?"fail.":"accepted.");
+	}
+	if(password_required) return 0;
+	
 	while(1) {
 		left=sizeof(cmd);
 		while(left >0) {
@@ -387,8 +413,9 @@ int main(int argc, char **argv)
 #else
 	struct sigaction sigact, sigign;
 #endif
+	int q=0;
 
-	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:n:d:P:")) != -1) {
+	while ((opt = getopt(argc, argv, "a:p:f:g:s:b:n:d:P:l:")) != -1) {
 		switch (opt) {
 		case 'd':
 			dev_index = verbose_device_search(optarg);
@@ -418,6 +445,11 @@ int main(int argc, char **argv)
 		case 'P':
 			ppm_error = atoi(optarg);
 			custom_ppm = 1;
+			break;
+		case 'l':
+			for(q=0;optarg[q] && q<199;q++) user_password[q]=optarg[q];
+			user_password[q]='\0';
+			password_flag=1;
 			break;
 		default:
 			usage();
@@ -541,6 +573,8 @@ int main(int argc, char **argv)
 			} else if(r) {
 				rlen = sizeof(remote);
 				s = accept(listensocket,(struct sockaddr *)&remote, &rlen);
+				password_failed = 0;
+				password_required = password_flag;
 				break;
 			}
 		}
@@ -548,6 +582,8 @@ int main(int argc, char **argv)
 		setsockopt(s, SOL_SOCKET, SO_LINGER, (char *)&ling, sizeof(ling));
 
 		printf("client accepted!\n");
+
+		password_failed=0;
 
 		memset(&dongle_info, 0, sizeof(dongle_info));
 		memcpy(&dongle_info.magic, "RTL0", 4);
