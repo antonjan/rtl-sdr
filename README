@@ -4,3 +4,15 @@ turns your Realtek RTL2832 based DVB dongle into a SDR receiver
 
 For more information see:
 http://sdr.osmocom.org/trac/wiki/rtl-sdr
+
+======================================================================
+
+This version has been modified by HA7ILM to include password protection.
+If the "-l password" switch is supplied, the client starts to get the I/Q samples only after sending the correct password over the socket.
+
+Known problems:
+- Password is sent plain-text by now. It's not secure, but better than no authentication at all.
+- Dongle identifier is sent back before authentication, password only protects the I/Q samples.
+- Please use adequately long passwords.
+- This feature has been added for support in a later version of OpenWebRX.
+
